@@ -1,0 +1,105 @@
+from flask import Flask, render_template, request, redirect, url_for
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import plotly.express as px
+import os
+from flask_sqlalchemy import SQLAlchemy
+
+# setuppojam flasku
+app = Flask(__name__)
+os.makedirs("static", exist_ok=True)
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///data.db"
+db = SQLAlchemy(app)
+
+# palaizam datu bazi
+class Country(db.Model):
+    print(db)
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    population = db.Column(db.Integer)
+    area = db.Column(db.Integer)
+    join_year = db.Column(db.Integer)
+    gdp = db.Column(db.Integer)
+    avg_income = db.Column(db.Integer)
+    border_length = db.Column(db.Integer)
+    
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+# datu ielāde no excel uz datubāzi
+@app.route("/load_data")
+def load_data():
+    df = pd.read_excel("programmesana.xlsx")
+    df.to_sql("country", db.engine, if_exists="replace", index=False)
+    return "Dati ielādēti!"
+
+# valstu tabula
+@app.route("/countries", methods=["GET", "POST"])
+def countries():
+    search_query = request.form.get("search", "")
+    if search_query:
+        data = Country.query.filter(Country.name.contains(search_query)).all()
+    else:
+        data = Country.query.all()
+    return render_template("table.html", data=data, search_query=search_query)
+
+# grafiku ģenerēšana
+@app.route("/charts")
+def charts():
+    df = pd.read_sql("SELECT * FROM country", db.engine)
+    
+    # diagramma 1
+    plt.figure(figsize=(10,6))
+    sns.barplot(x="name", y="avg_income", data=df)
+    plt.xticks(rotation=90)
+    plt.title("Vidējie gada ienākumi ES valstīs")
+    plt.savefig("static/income_chart.png")
+    plt.close()
+    
+    # histogramma
+    plt.figure(figsize=(10,6))
+    sns.histplot(df["population"], bins=10, kde=True)
+    plt.title("Iedzīvotāju sadalījums")
+    plt.savefig("static/population_hist.png")
+    plt.close()
+    
+    # Korelācijas matrica NESTRĀDĀ!!!!!!
+    #plt.figure(figsize=(8,6))
+    #sns.heatmap(df.corr(), annot=True, cmap="coolwarm", fmt=".2f")
+    #plt.title("Datu korelācija")
+    #plt.savefig("static/correlation_matrix.png")
+    #plt.close()
+    
+    return render_template("chart.html", charts=[
+        "static/income_chart.png",
+        "static/population_hist.png",
+    ])
+
+@app.route("/upload", methods=["GET", "POST"])
+def upload_file():
+    if request.method == "POST":
+        file = request.files["file"]
+        if file:
+            try:
+                df = pd.read_csv(file)
+                required_columns = {"name", "population", "area", "join_year", "gdp", "avg_income", "border_length"}
+                if not required_columns.issubset(df.columns):
+                    return "CSV fails validation. Ensure it contains the required columns: " + ", ".join(required_columns)
+                df = df.astype({"name": str})
+                numeric_columns = ["population", "area", "join_year", "gdp", "avg_income", "border_length"]
+                for col in numeric_columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+                df = df.dropna(subset=numeric_columns)
+                df[numeric_columns] = df[numeric_columns].astype(int)
+                df.to_sql("country", db.engine, if_exists="append", index=False)
+                return "Dati veiksmīgi augšupielādēti!"
+            except Exception as e:
+                return f"Kļūda augšupielādējot datus: {e}"
+    return render_template("upload.html")
+
+if __name__ == "__main__":
+    with app.app_context():
+        db.create_all()
+    app.run(debug=True)
